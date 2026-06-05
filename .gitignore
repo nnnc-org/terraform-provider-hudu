@@ -1,0 +1,36 @@
+# Provider binary
+terraform-provider-hudu
+terraform-provider-hudu_*
+
+# Go build artifacts
+/bin/
+/dist/
+*.test
+*.out
+
+# Terraform local state
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+crash.log
+crash.*.log
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Devbox / Nix
+.devbox/
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Smoketest local state
+/smoketest/.terraform/
+/smoketest/.terraform.lock.hcl
+/smoketest/terraform.tfstate*
+/smoketest/.terraform.tfstate*

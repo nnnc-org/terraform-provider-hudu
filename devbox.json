@@ -1,0 +1,18 @@
+{
+  "$schema": "https://raw.githubusercontent.com/jetify-com/devbox/0.13.6/.schema/devbox.schema.json",
+  "packages": [
+    "go@1.24.5",
+    "opentofu@latest"
+  ],
+  "shell": {
+    "scripts": {
+      "build": ["go build -o terraform-provider-hudu ."],
+      "install": ["make install"],
+      "test": ["go test ./... -count=1"],
+      "testacc": ["TF_ACC=1 go test ./internal/provider/... -v -count=1 -timeout 120m"],
+      "fmt": ["gofmt -s -w ."],
+      "vet": ["go vet ./..."],
+      "tidy": ["go mod tidy"]
+    }
+  }
+}

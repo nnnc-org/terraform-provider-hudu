@@ -1,0 +1,135 @@
+# terraform-provider-hudu
+
+A Terraform / OpenTofu provider for [Hudu](https://www.hudu.com/), the IT
+documentation platform. Built with the
+[terraform-plugin-framework](https://github.com/hashicorp/terraform-plugin-framework).
+
+## Supported resources
+
+| Resource | Description |
+|---|---|
+| `hudu_company` | Companies (full CRUD). |
+| `hudu_asset_layout` | Asset layouts with nested custom fields. **Note:** Hudu's API has no DELETE endpoint for layouts, so `terraform destroy` sets `active = false` instead. |
+| `hudu_asset` | Assets with dynamic `custom_fields`. |
+| `hudu_network` | Networks. |
+| `hudu_vlan` | VLANs. |
+
+## Provider configuration
+
+```hcl
+terraform {
+  required_providers {
+    hudu = {
+      source = "nnnc-org/hudu"
+    }
+  }
+}
+
+provider "hudu" {
+  host    = "https://hudu.example.com"   # or HUDU_API_HOST
+  api_key = var.hudu_api_key             # or HUDU_API_KEY
+}
+```
+
+## Local development
+
+```sh
+# Build & install into Terraform's local plugin cache
+make install
+```
+
+Then point Terraform/OpenTofu at the local build via `~/.terraformrc`:
+
+```hcl
+provider_installation {
+  dev_overrides {
+    "nnnc-org/hudu" = "/home/<you>/.terraform.d/plugins/registry.terraform.io/nnnc-org/hudu/0.1.0/<os>_<arch>"
+  }
+  direct {}
+}
+```
+
+With dev_overrides active, `terraform init` is unnecessary (and prints a
+warning) — just `terraform plan` / `terraform apply`.
+
+## Testing
+
+```sh
+make test         # unit tests
+make testacc      # acceptance tests (hits a live Hudu tenant)
+```
+
+Acceptance tests expect `HUDU_API_HOST` and `HUDU_API_KEY` env vars.
+
+## Known issues
+
+### `terraform destroy` cannot fully clean up `hudu_asset_layout`
+
+The Hudu API has no `DELETE /asset_layouts/{id}` endpoint, so this provider's
+`Delete` handler issues `PUT /asset_layouts/{id}` with `active: false` (soft
+delete).
+
+In at least some tenants (observed against `huducloud.com` on 2026-06-05), every
+write to `PUT /asset_layouts/{id}` returns HTTP 500 — including no-op renames
+and toggling `active`. `GET` and `POST` on the same endpoint work fine. We
+reported this to Hudu; until it's resolved upstream, `terraform destroy` will:
+
+- Remove the layout from Terraform state.
+- Emit a Terraform warning (not an error) noting that the layout is still active in Hudu.
+- Leave the layout in your tenant. Deactivate it manually via **Hudu Admin →
+  Asset Layouts → ⋯ → Deactivate** if you want it gone.
+
+This affects `terraform destroy` only — `apply`, `plan`, and `import` work
+normally.
+
+### Asset CheckBox values must be native bools
+
+Hudu's API docs say CheckBox custom fields accept string values (`"true"`),
+but the GET response returns real booleans. To avoid plan/state drift, write
+checkboxes as bools in HCL:
+
+```hcl
+custom_fields = {
+  is_active = true   # NOT "true"
+}
+```
+
+### API key scope
+
+Creating an API key in Hudu requires explicit scoping. To use this provider
+end-to-end, the key must have:
+
+- **Destructive actions** enabled (otherwise `DELETE` on companies, networks,
+  and VLANs fails with `401 Key does not have delete permissions!`).
+- **Whitelisted IPs** that include the host running Terraform/OpenTofu (or no
+  IP allowlist).
+
+## Custom fields on `hudu_asset`
+
+`custom_fields` is a `dynamic` attribute. Keys must match the layout field
+labels converted to snake_case (lowercase, spaces → underscores). Values can be
+any type the layout permits — strings, numbers, booleans, lists, or nested
+objects for Address fields. Example:
+
+```hcl
+resource "hudu_asset" "example" {
+  company_id      = hudu_company.acme.id
+  asset_layout_id = hudu_asset_layout.computer.id
+  name            = "Example"
+
+  custom_fields = {
+    operating_system = "Linux"
+    score            = 5
+    is_active        = true
+    categories       = ["Item 1", "Item 2"]
+    linked_assets    = [456, 789]
+    office_location = {
+      address_line_1 = "123 Main St"
+      city           = "Denver"
+      state          = "CO"
+      zip            = "80202"
+      country_name   = "USA"
+    }
+  }
+}
+```

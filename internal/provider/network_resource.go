@@ -1,0 +1,214 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/nnnc-org/terraform-provider-hudu/internal/client"
+)
+
+var (
+	_ resource.Resource                = (*networkResource)(nil)
+	_ resource.ResourceWithConfigure   = (*networkResource)(nil)
+	_ resource.ResourceWithImportState = (*networkResource)(nil)
+)
+
+// NewNetworkResource returns a new hudu_network resource implementation.
+func NewNetworkResource() resource.Resource {
+	return &networkResource{}
+}
+
+type networkResource struct {
+	client *client.Client
+}
+
+type networkModel struct {
+	ID          types.String `tfsdk:"id"`
+	Name        types.String `tfsdk:"name"`
+	Address     types.String `tfsdk:"address"`
+	CompanyID   types.Int64  `tfsdk:"company_id"`
+	Description types.String `tfsdk:"description"`
+	NetworkType types.Int64  `tfsdk:"network_type"`
+	LocationID  types.Int64  `tfsdk:"location_id"`
+	VlanID      types.Int64  `tfsdk:"vlan_id"`
+	Archived    types.Bool   `tfsdk:"archived"`
+	Slug        types.String `tfsdk:"slug"`
+	URL         types.String `tfsdk:"url"`
+	CreatedAt   types.String `tfsdk:"created_at"`
+	UpdatedAt   types.String `tfsdk:"updated_at"`
+}
+
+func (r *networkResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_network"
+}
+
+func (r *networkResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a Hudu network.",
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"name":        schema.StringAttribute{Required: true},
+			"address":     schema.StringAttribute{Required: true, Description: "Network address in CIDR notation, e.g. `192.168.1.0/24`."},
+			"company_id":  schema.Int64Attribute{Required: true, Description: "ID of the owning company."},
+			"description": schema.StringAttribute{Optional: true},
+			"network_type": schema.Int64Attribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "Integer code for the network type. Server-defaulted if unset.",
+			},
+			"location_id": schema.Int64Attribute{Optional: true, Computed: true},
+			"vlan_id":     schema.Int64Attribute{Optional: true, Computed: true, Description: "ID of the associated `hudu_vlan` resource."},
+			"archived": schema.BoolAttribute{
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
+			"slug": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"url": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"created_at": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"updated_at": schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+func (r *networkResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+	c, ok := req.ProviderData.(*client.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", "Expected *client.Client.")
+		return
+	}
+	r.client = c
+}
+
+func (r *networkResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan networkModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	out, err := r.client.CreateNetwork(ctx, networkFromModel(&plan))
+	if err != nil {
+		resp.Diagnostics.AddError("Create network failed", err.Error())
+		return
+	}
+	networkToModel(out, &plan)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *networkResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state networkModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	id, err := strconv.ParseInt(state.ID.ValueString(), 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID in state", err.Error())
+		return
+	}
+	out, err := r.client.GetNetwork(ctx, id)
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Read network failed", err.Error())
+		return
+	}
+	networkToModel(out, &state)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *networkResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan networkModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	id, err := strconv.ParseInt(plan.ID.ValueString(), 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID in plan", err.Error())
+		return
+	}
+	out, err := r.client.UpdateNetwork(ctx, id, networkFromModel(&plan))
+	if err != nil {
+		resp.Diagnostics.AddError("Update network failed", err.Error())
+		return
+	}
+	networkToModel(out, &plan)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *networkResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state networkModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	id, err := strconv.ParseInt(state.ID.ValueString(), 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID in state", err.Error())
+		return
+	}
+	if err := r.client.DeleteNetwork(ctx, id); err != nil && !errors.Is(err, client.ErrNotFound) {
+		resp.Diagnostics.AddError("Delete network failed", err.Error())
+	}
+}
+
+func (r *networkResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func networkFromModel(m *networkModel) *client.Network {
+	return &client.Network{
+		Name:        m.Name.ValueString(),
+		Address:     m.Address.ValueString(),
+		CompanyID:   m.CompanyID.ValueInt64(),
+		Description: stringPtr(m.Description),
+		NetworkType: int64Ptr(m.NetworkType),
+		LocationID:  int64Ptr(m.LocationID),
+		VlanID:      int64Ptr(m.VlanID),
+		Archived:    boolPtr(m.Archived),
+	}
+}
+
+func networkToModel(n *client.Network, m *networkModel) {
+	m.ID = types.StringValue(fmt.Sprintf("%d", n.ID))
+	m.Name = types.StringValue(n.Name)
+	m.Address = types.StringValue(n.Address)
+	m.CompanyID = types.Int64Value(n.CompanyID)
+	m.Description = stringFromPtr(n.Description)
+	m.NetworkType = int64FromPtr(n.NetworkType)
+	m.LocationID = int64FromPtr(n.LocationID)
+	m.VlanID = int64FromPtr(n.VlanID)
+	m.Archived = types.BoolValue(n.ArchivedAt != nil && *n.ArchivedAt != "")
+	m.Slug = types.StringValue(n.Slug)
+	m.URL = types.StringValue(n.URL)
+	m.CreatedAt = types.StringValue(n.CreatedAt)
+	m.UpdatedAt = types.StringValue(n.UpdatedAt)
+}

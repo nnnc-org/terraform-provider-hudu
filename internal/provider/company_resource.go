@@ -1,0 +1,245 @@
+package provider
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strconv"
+
+	"github.com/hashicorp/terraform-plugin-framework/path"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"github.com/nnnc-org/terraform-provider-hudu/internal/client"
+)
+
+var (
+	_ resource.Resource                = (*companyResource)(nil)
+	_ resource.ResourceWithConfigure   = (*companyResource)(nil)
+	_ resource.ResourceWithImportState = (*companyResource)(nil)
+)
+
+// NewCompanyResource returns a new hudu_company resource implementation.
+func NewCompanyResource() resource.Resource {
+	return &companyResource{}
+}
+
+type companyResource struct {
+	client *client.Client
+}
+
+type companyModel struct {
+	ID              types.String `tfsdk:"id"`
+	Name            types.String `tfsdk:"name"`
+	Nickname        types.String `tfsdk:"nickname"`
+	CompanyType     types.String `tfsdk:"company_type"`
+	AddressLine1    types.String `tfsdk:"address_line_1"`
+	AddressLine2    types.String `tfsdk:"address_line_2"`
+	City            types.String `tfsdk:"city"`
+	State           types.String `tfsdk:"state"`
+	Zip             types.String `tfsdk:"zip"`
+	CountryName     types.String `tfsdk:"country_name"`
+	PhoneNumber     types.String `tfsdk:"phone_number"`
+	FaxNumber       types.String `tfsdk:"fax_number"`
+	Website         types.String `tfsdk:"website"`
+	IDNumber        types.String `tfsdk:"id_number"`
+	ParentCompanyID types.Int64  `tfsdk:"parent_company_id"`
+	Notes           types.String `tfsdk:"notes"`
+	Slug            types.String `tfsdk:"slug"`
+	Archived        types.Bool   `tfsdk:"archived"`
+	URL             types.String `tfsdk:"url"`
+	FullURL         types.String `tfsdk:"full_url"`
+	CreatedAt       types.String `tfsdk:"created_at"`
+	UpdatedAt       types.String `tfsdk:"updated_at"`
+}
+
+func (r *companyResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
+	resp.TypeName = req.ProviderTypeName + "_company"
+}
+
+func (r *companyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Manages a Hudu company.",
+		Attributes: map[string]schema.Attribute{
+			"id": schema.StringAttribute{
+				Computed:      true,
+				Description:   "Numeric ID assigned by Hudu, as a string.",
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"name":              schema.StringAttribute{Required: true, Description: "Company name."},
+			"nickname":          schema.StringAttribute{Optional: true},
+			"company_type":      schema.StringAttribute{Optional: true},
+			"address_line_1":    schema.StringAttribute{Optional: true},
+			"address_line_2":    schema.StringAttribute{Optional: true},
+			"city":              schema.StringAttribute{Optional: true},
+			"state":             schema.StringAttribute{Optional: true},
+			"zip":               schema.StringAttribute{Optional: true},
+			"country_name":      schema.StringAttribute{Optional: true},
+			"phone_number":      schema.StringAttribute{Optional: true},
+			"fax_number":        schema.StringAttribute{Optional: true},
+			"website":           schema.StringAttribute{Optional: true},
+			"id_number":         schema.StringAttribute{Optional: true, Description: "Custom identifier (id_number in the API)."},
+			"parent_company_id": schema.Int64Attribute{Optional: true},
+			"notes":             schema.StringAttribute{Optional: true},
+			"slug": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"archived": schema.BoolAttribute{Computed: true},
+			"url": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"full_url": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"created_at": schema.StringAttribute{
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"updated_at": schema.StringAttribute{Computed: true},
+		},
+	}
+}
+
+func (r *companyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
+	if req.ProviderData == nil {
+		return
+	}
+	c, ok := req.ProviderData.(*client.Client)
+	if !ok {
+		resp.Diagnostics.AddError("Unexpected provider data", "Expected *client.Client.")
+		return
+	}
+	r.client = c
+}
+
+func (r *companyResource) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
+	var plan companyModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	in := companyFromModel(&plan)
+	out, err := r.client.CreateCompany(ctx, in)
+	if err != nil {
+		resp.Diagnostics.AddError("Create company failed", err.Error())
+		return
+	}
+	companyToModel(out, &plan)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *companyResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
+	var state companyModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	id, err := strconv.ParseInt(state.ID.ValueString(), 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID in state", err.Error())
+		return
+	}
+	out, err := r.client.GetCompany(ctx, id)
+	if err != nil {
+		if errors.Is(err, client.ErrNotFound) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		resp.Diagnostics.AddError("Read company failed", err.Error())
+		return
+	}
+	companyToModel(out, &state)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
+}
+
+func (r *companyResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan companyModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	id, err := strconv.ParseInt(plan.ID.ValueString(), 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID in plan", err.Error())
+		return
+	}
+	in := companyFromModel(&plan)
+	out, err := r.client.UpdateCompany(ctx, id, in)
+	if err != nil {
+		resp.Diagnostics.AddError("Update company failed", err.Error())
+		return
+	}
+	companyToModel(out, &plan)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+func (r *companyResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
+	var state companyModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	id, err := strconv.ParseInt(state.ID.ValueString(), 10, 64)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid ID in state", err.Error())
+		return
+	}
+	if err := r.client.DeleteCompany(ctx, id); err != nil && !errors.Is(err, client.ErrNotFound) {
+		resp.Diagnostics.AddError("Delete company failed", err.Error())
+	}
+}
+
+func (r *companyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+}
+
+func companyFromModel(m *companyModel) *client.Company {
+	return &client.Company{
+		Name:            m.Name.ValueString(),
+		Nickname:        stringPtr(m.Nickname),
+		CompanyType:     stringPtr(m.CompanyType),
+		AddressLine1:    stringPtr(m.AddressLine1),
+		AddressLine2:    stringPtr(m.AddressLine2),
+		City:            stringPtr(m.City),
+		State:           stringPtr(m.State),
+		Zip:             stringPtr(m.Zip),
+		CountryName:     stringPtr(m.CountryName),
+		PhoneNumber:     stringPtr(m.PhoneNumber),
+		FaxNumber:       stringPtr(m.FaxNumber),
+		Website:         stringPtr(m.Website),
+		IDNumber:        stringPtr(m.IDNumber),
+		ParentCompanyID: int64Ptr(m.ParentCompanyID),
+		Notes:           stringPtr(m.Notes),
+	}
+}
+
+func companyToModel(c *client.Company, m *companyModel) {
+	m.ID = types.StringValue(fmt.Sprintf("%d", c.ID))
+	m.Name = types.StringValue(c.Name)
+	m.Nickname = stringFromPtr(c.Nickname)
+	m.CompanyType = stringFromPtr(c.CompanyType)
+	m.AddressLine1 = stringFromPtr(c.AddressLine1)
+	m.AddressLine2 = stringFromPtr(c.AddressLine2)
+	m.City = stringFromPtr(c.City)
+	m.State = stringFromPtr(c.State)
+	m.Zip = stringFromPtr(c.Zip)
+	m.CountryName = stringFromPtr(c.CountryName)
+	m.PhoneNumber = stringFromPtr(c.PhoneNumber)
+	m.FaxNumber = stringFromPtr(c.FaxNumber)
+	m.Website = stringFromPtr(c.Website)
+	m.IDNumber = stringFromPtr(c.IDNumber)
+	m.ParentCompanyID = int64FromPtr(c.ParentCompanyID)
+	m.Notes = stringFromPtr(c.Notes)
+	m.Slug = types.StringValue(c.Slug)
+	m.Archived = types.BoolValue(c.Archived)
+	m.URL = types.StringValue(c.URL)
+	m.FullURL = types.StringValue(c.FullURL)
+	m.CreatedAt = types.StringValue(c.CreatedAt)
+	m.UpdatedAt = types.StringValue(c.UpdatedAt)
+}
