@@ -64,24 +64,19 @@ Acceptance tests expect `HUDU_API_HOST` and `HUDU_API_KEY` env vars.
 
 ## Known issues
 
-### `terraform destroy` cannot fully clean up `hudu_asset_layout`
+### `hudu_asset_layout` is soft-deleted on destroy
 
-The Hudu API has no `DELETE /asset_layouts/{id}` endpoint, so this provider's
-`Delete` handler issues `PUT /asset_layouts/{id}` with `active: false` (soft
-delete).
+The Hudu API has no `DELETE /asset_layouts/{id}` endpoint, so `terraform
+destroy` issues `PUT /asset_layouts/{id}` with `active: false` (soft delete)
+and removes the resource from state. The layout is hidden from the UI but not
+permanently removed.
 
-In at least some tenants (observed against `huducloud.com` on 2026-06-05), every
-write to `PUT /asset_layouts/{id}` returns HTTP 500 — including no-op renames
-and toggling `active`. `GET` and `POST` on the same endpoint work fine. We
-reported this to Hudu; until it's resolved upstream, `terraform destroy` will:
-
-- Remove the layout from Terraform state.
-- Emit a Terraform warning (not an error) noting that the layout is still active in Hudu.
-- Leave the layout in your tenant. Deactivate it manually via **Hudu Admin →
-  Asset Layouts → ⋯ → Deactivate** if you want it gone.
-
-This affects `terraform destroy` only — `apply`, `plan`, and `import` work
-normally.
+> **Historical note:** earlier Hudu versions returned HTTP 500 on *every* write
+> to `PUT /asset_layouts/{id}` (observed against `huducloud.com` on 2026-06-05),
+> which broke updates and soft-deletes. This was fixed upstream (re-verified
+> 2026-10-23). If you hit 500s on layout updates/destroys with an older Hudu
+> release, that's the cause — deactivate the layout manually via **Hudu Admin →
+> Asset Layouts → ⋯ → Deactivate**.
 
 ### Asset CheckBox values must be native bools
 

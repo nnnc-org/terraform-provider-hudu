@@ -218,15 +218,10 @@ func (r *assetLayoutResource) Delete(ctx context.Context, req resource.DeleteReq
 		resp.Diagnostics.AddError("Invalid ID in state", err.Error())
 		return
 	}
+	// The API has no DELETE endpoint for layouts, so destroy soft-deletes
+	// by PUTing active=false.
 	if err := r.client.DeactivateAssetLayout(ctx, id); err != nil && !errors.Is(err, client.ErrNotFound) {
-		// The API has no DELETE endpoint for layouts, and PUT can fail
-		// for reasons we can't recover from (e.g. server 500). Warn and
-		// drop from state so the destroy isn't permanently stuck — the
-		// orphan layout can be deactivated via the Hudu UI.
-		resp.Diagnostics.AddWarning(
-			"Asset layout left active in Hudu",
-			fmt.Sprintf("Could not deactivate layout id=%d: %s. The resource has been removed from Terraform state; deactivate it manually via the Hudu UI if desired.", id, err.Error()),
-		)
+		resp.Diagnostics.AddError("Deactivate asset layout failed", err.Error())
 	}
 }
 
