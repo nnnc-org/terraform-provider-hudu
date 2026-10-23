@@ -39,6 +39,7 @@ type assetLayoutModel struct {
 	Icon             types.String            `tfsdk:"icon"`
 	Color            types.String            `tfsdk:"color"`
 	IconColor        types.String            `tfsdk:"icon_color"`
+	SidebarFolderID  types.Int64             `tfsdk:"sidebar_folder_id"`
 	Active           types.Bool              `tfsdk:"active"`
 	IncludePasswords types.Bool              `tfsdk:"include_passwords"`
 	IncludePhotos    types.Bool              `tfsdk:"include_photos"`
@@ -84,6 +85,11 @@ func (r *assetLayoutResource) Schema(_ context.Context, _ resource.SchemaRequest
 			"icon":       schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, Description: "Font Awesome icon class, e.g. `fas fa-laptop`."},
 			"color":      schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, Description: "Background color as a hex string."},
 			"icon_color": schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()}, Description: "Icon color as a hex string."},
+			"sidebar_folder_id": schema.Int64Attribute{
+				Optional:    true,
+				Computed:    true,
+				Description: "ID of the sidebar folder this layout is grouped under in the Hudu sidebar. The folder must already exist in Hudu — the API has no endpoint to create sidebar folders, so create the folder in the Hudu UI and reference its numeric ID here.",
+			},
 			"active": schema.BoolAttribute{
 				Optional:    true,
 				Computed:    true,
@@ -235,6 +241,7 @@ func assetLayoutFromModel(m *assetLayoutModel) *client.AssetLayout {
 		Icon:             m.Icon.ValueString(),
 		Color:            m.Color.ValueString(),
 		IconColor:        m.IconColor.ValueString(),
+		SidebarFolderID:  int64Ptr(m.SidebarFolderID),
 		Active:           boolPtr(m.Active),
 		IncludePasswords: boolPtr(m.IncludePasswords),
 		IncludePhotos:    boolPtr(m.IncludePhotos),
@@ -272,6 +279,7 @@ func assetLayoutToModel(a *client.AssetLayout, m *assetLayoutModel) {
 	m.Icon = types.StringValue(a.Icon)
 	m.Color = types.StringValue(a.Color)
 	m.IconColor = types.StringValue(a.IconColor)
+	m.SidebarFolderID = int64FromPtr(a.SidebarFolderID)
 	m.Active = boolFromPtrDefault(a.Active, true)
 	m.IncludePasswords = boolFromPtrDefault(a.IncludePasswords, false)
 	m.IncludePhotos = boolFromPtrDefault(a.IncludePhotos, false)

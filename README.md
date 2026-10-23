@@ -78,6 +78,26 @@ permanently removed.
 > release, that's the cause — deactivate the layout manually via **Hudu Admin →
 > Asset Layouts → ⋯ → Deactivate**.
 
+### Sidebar folders (asset folders) can be referenced but not created
+
+Asset layouts are grouped in the Hudu sidebar by "sidebar folders" (the
+`sidebar_folders` resource in the admin UI). Set `sidebar_folder_id` on a
+`hudu_asset_layout` to place the layout in a folder:
+
+```hcl
+resource "hudu_asset_layout" "computer" {
+  name              = "Computer"
+  sidebar_folder_id = 12   # an existing folder's numeric ID
+  # ...
+}
+```
+
+Hudu's public API exposes `sidebar_folder_id` as a foreign key on the layout
+but provides **no endpoint to create, list, or delete the sidebar folders
+themselves** (every `/sidebar_folders`-style route returns 404). Create the
+folder once in the Hudu UI, note its numeric ID, and reference it here. Leaving
+`sidebar_folder_id` unset keeps the layout at the top level.
+
 ### Asset CheckBox values must be native bools
 
 Hudu's API docs say CheckBox custom fields accept string values (`"true"`),
