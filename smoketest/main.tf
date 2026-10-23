@@ -58,11 +58,19 @@ resource "hudu_asset_layout" "smoke" {
   ]
 }
 
+resource "hudu_vlan_zone" "smoke" {
+  name           = "${local.prefix}-vlan-zone"
+  company_id     = tonumber(hudu_company.smoke.id)
+  vlan_id_ranges = "3900-4094"
+  description    = "Smoketest VLAN zone"
+}
+
 resource "hudu_vlan" "smoke" {
-  name        = "${local.prefix}-vlan"
-  vlan_id     = 4000
-  company_id  = tonumber(hudu_company.smoke.id)
-  description = "Smoketest VLAN"
+  name         = "${local.prefix}-vlan"
+  vlan_id      = 4000
+  company_id   = tonumber(hudu_company.smoke.id)
+  vlan_zone_id = tonumber(hudu_vlan_zone.smoke.id)
+  description  = "Smoketest VLAN"
 }
 
 resource "hudu_network" "smoke" {
@@ -95,4 +103,12 @@ output "company_id" {
 
 output "asset_url" {
   value = hudu_asset.smoke.url
+}
+
+output "vlan_zone_id" {
+  value = hudu_vlan_zone.smoke.id
+}
+
+output "vlan_zone_url" {
+  value = hudu_vlan_zone.smoke.url
 }

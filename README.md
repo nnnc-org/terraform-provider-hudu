@@ -13,6 +13,7 @@ documentation platform. Built with the
 | `hudu_asset` | Assets with dynamic `custom_fields`. |
 | `hudu_network` | Networks. |
 | `hudu_vlan` | VLANs. |
+| `hudu_vlan_zone` | VLAN zones (logical groupings of VLANs). |
 
 ## Provider configuration
 

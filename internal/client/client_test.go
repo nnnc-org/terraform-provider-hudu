@@ -146,6 +146,37 @@ func TestListNetworks_BareArrayResponse(t *testing.T) {
 	}
 }
 
+func TestCreateVlanZone_BareRequestAndResponse(t *testing.T) {
+	var gotMethod, gotPath string
+	var gotBody map[string]any
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&gotBody)
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":7,"name":"East DC","vlan_id_ranges":"100-500","company_id":45,"slug":"east-dc"}`))
+	}))
+
+	out, err := c.CreateVlanZone(context.Background(), &VlanZone{
+		Name:         "East DC",
+		VlanIDRanges: "100-500",
+		CompanyID:    45,
+	})
+	if err != nil {
+		t.Fatalf("CreateVlanZone: %v", err)
+	}
+	if gotMethod != "POST" || gotPath != "/api/v1/vlan_zones" {
+		t.Errorf("got %s %s, want POST /api/v1/vlan_zones", gotMethod, gotPath)
+	}
+	// Request body is sent bare (not wrapped in a "vlan_zone" envelope).
+	if gotBody["name"] != "East DC" || gotBody["vlan_id_ranges"] != "100-500" {
+		t.Errorf("body = %v", gotBody)
+	}
+	if out.ID != 7 || out.Name != "East DC" || out.VlanIDRanges != "100-500" || out.Slug != "east-dc" {
+		t.Errorf("decoded vlan zone = %+v", out)
+	}
+}
+
 func TestRetryOn500(t *testing.T) {
 	calls := 0
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

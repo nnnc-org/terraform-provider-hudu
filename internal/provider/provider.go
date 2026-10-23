@@ -43,7 +43,7 @@ func (p *HuduProvider) Metadata(_ context.Context, _ provider.MetadataRequest, r
 
 func (p *HuduProvider) Schema(_ context.Context, _ provider.SchemaRequest, resp *provider.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		Description: "Manage Hudu IT documentation resources (companies, asset layouts, assets, networks, VLANs) via Terraform/OpenTofu.",
+		Description: "Manage Hudu IT documentation resources (companies, asset layouts, assets, networks, VLANs, VLAN zones) via Terraform/OpenTofu.",
 		Attributes: map[string]schema.Attribute{
 			"host": schema.StringAttribute{
 				Optional:    true,
@@ -124,6 +124,7 @@ func (p *HuduProvider) Resources(_ context.Context) []func() resource.Resource {
 		NewAssetResource,
 		NewNetworkResource,
 		NewVlanResource,
+		NewVlanZoneResource,
 	}
 }
 
