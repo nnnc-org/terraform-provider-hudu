@@ -208,37 +208,32 @@ func (r *assetLayoutResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 	in := assetLayoutFromModel(&plan)
 
-	// Carry each existing field's server id onto the planned field (matched by
-	// label) so updates/renames target the right field instead of colliding.
-	idByLabel := map[string]int64{}
-	for _, f := range state.Fields {
-		idByLabel[f.Label.ValueString()] = f.ID.ValueInt64()
-	}
+	// Reconcile planned fields against existing ones so each targets the right
+	// server id: a field is matched by label, or (for a rename) by position when
+	// its old label is going away. Existing fields that nothing reuses are
+	// deleted via is_destroyed (Hudu has no field DELETE endpoint, and omitting a
+	// field on PUT leaves it in place).
+	planKeys := fieldKeys(plan.Fields)
+	stateKeys := fieldKeys(state.Fields)
+	planIDs, destroyIDs := matchLayoutFields(planKeys, stateKeys)
 	for i := range in.Fields {
-		if in.Fields[i].ID == 0 {
-			if fid, ok := idByLabel[in.Fields[i].Label]; ok {
-				in.Fields[i].ID = fid
-			}
+		if in.Fields[i].ID == 0 && planIDs[i] != 0 {
+			in.Fields[i].ID = planIDs[i]
 		}
 	}
-
-	// Fields present in prior state but gone from the plan are deleted by
-	// re-sending them with is_destroyed=true (Hudu has no field DELETE endpoint;
-	// omitting a field on PUT leaves it in place).
-	planLabels := map[string]bool{}
-	for _, f := range plan.Fields {
-		planLabels[f.Label.ValueString()] = true
-	}
+	stateByID := map[int64]assetLayoutFieldModel{}
 	for _, f := range state.Fields {
-		if !planLabels[f.Label.ValueString()] {
-			destroyed := true
-			in.Fields = append(in.Fields, client.AssetLayoutField{
-				ID:          f.ID.ValueInt64(),
-				Label:       f.Label.ValueString(),
-				FieldType:   f.FieldType.ValueString(),
-				IsDestroyed: &destroyed,
-			})
-		}
+		stateByID[f.ID.ValueInt64()] = f
+	}
+	for _, did := range destroyIDs {
+		f := stateByID[did]
+		destroyed := true
+		in.Fields = append(in.Fields, client.AssetLayoutField{
+			ID:          did,
+			Label:       f.Label.ValueString(),
+			FieldType:   f.FieldType.ValueString(),
+			IsDestroyed: &destroyed,
+		})
 	}
 
 	out, err := r.client.UpdateAssetLayout(ctx, id, in)
@@ -361,6 +356,59 @@ func reconcileLayoutFields(model []assetLayoutFieldModel, api []client.AssetLayo
 		out[i] = rf
 	}
 	return out
+}
+
+// fieldKey is the minimal identity of a layout field used for reconciliation.
+type fieldKey struct {
+	label string
+	pos   int64
+	id    int64
+}
+
+func fieldKeys(fs []assetLayoutFieldModel) []fieldKey {
+	out := make([]fieldKey, len(fs))
+	for i, f := range fs {
+		out[i] = fieldKey{label: f.Label.ValueString(), pos: f.Position.ValueInt64(), id: f.ID.ValueInt64()}
+	}
+	return out
+}
+
+// matchLayoutFields maps each planned field to the existing field id it should
+// reuse (0 = brand new) and returns the ids of existing fields that nothing
+// reuses (to be destroyed). A field is matched by label first; a planned field
+// whose label is new is treated as a rename of the existing field at the same
+// position when that field's label is itself going away. This keeps renames
+// in place (same id, data preserved) instead of delete+recreate.
+func matchLayoutFields(plan, state []fieldKey) (planIDs []int64, destroy []int64) {
+	stateByLabel := map[string]fieldKey{}
+	stateByPos := map[int64]fieldKey{}
+	for _, s := range state {
+		stateByLabel[s.label] = s
+		stateByPos[s.pos] = s
+	}
+	planLabels := map[string]bool{}
+	for _, p := range plan {
+		planLabels[p.label] = true
+	}
+	planIDs = make([]int64, len(plan))
+	used := map[int64]bool{}
+	for i, p := range plan {
+		if s, ok := stateByLabel[p.label]; ok {
+			planIDs[i] = s.id
+			used[s.id] = true
+			continue
+		}
+		if s, ok := stateByPos[p.pos]; ok && !planLabels[s.label] && !used[s.id] {
+			planIDs[i] = s.id // rename in place
+			used[s.id] = true
+		}
+	}
+	for _, s := range state {
+		if !used[s.id] {
+			destroy = append(destroy, s.id)
+		}
+	}
+	return planIDs, destroy
 }
 
 func boolFillUnknown(v types.Bool, apiPtr *bool, def bool) types.Bool {
