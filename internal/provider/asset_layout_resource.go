@@ -164,7 +164,8 @@ func (r *assetLayoutResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError("Create asset layout failed", err.Error())
 		return
 	}
-	assetLayoutToModel(out, &plan)
+	assetLayoutScalarsToModel(out, &plan)
+	plan.Fields = reconcileLayoutFields(plan.Fields, out.Fields)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -188,13 +189,15 @@ func (r *assetLayoutResource) Read(ctx context.Context, req resource.ReadRequest
 		resp.Diagnostics.AddError("Read asset layout failed", err.Error())
 		return
 	}
-	assetLayoutToModel(out, &state)
+	assetLayoutScalarsToModel(out, &state)
+	state.Fields = reconcileLayoutFields(state.Fields, out.Fields)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
 func (r *assetLayoutResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var plan assetLayoutModel
+	var plan, state assetLayoutModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -204,12 +207,47 @@ func (r *assetLayoutResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 	in := assetLayoutFromModel(&plan)
+
+	// Carry each existing field's server id onto the planned field (matched by
+	// label) so updates/renames target the right field instead of colliding.
+	idByLabel := map[string]int64{}
+	for _, f := range state.Fields {
+		idByLabel[f.Label.ValueString()] = f.ID.ValueInt64()
+	}
+	for i := range in.Fields {
+		if in.Fields[i].ID == 0 {
+			if fid, ok := idByLabel[in.Fields[i].Label]; ok {
+				in.Fields[i].ID = fid
+			}
+		}
+	}
+
+	// Fields present in prior state but gone from the plan are deleted by
+	// re-sending them with is_destroyed=true (Hudu has no field DELETE endpoint;
+	// omitting a field on PUT leaves it in place).
+	planLabels := map[string]bool{}
+	for _, f := range plan.Fields {
+		planLabels[f.Label.ValueString()] = true
+	}
+	for _, f := range state.Fields {
+		if !planLabels[f.Label.ValueString()] {
+			destroyed := true
+			in.Fields = append(in.Fields, client.AssetLayoutField{
+				ID:          f.ID.ValueInt64(),
+				Label:       f.Label.ValueString(),
+				FieldType:   f.FieldType.ValueString(),
+				IsDestroyed: &destroyed,
+			})
+		}
+	}
+
 	out, err := r.client.UpdateAssetLayout(ctx, id, in)
 	if err != nil {
 		resp.Diagnostics.AddError("Update asset layout failed", err.Error())
 		return
 	}
-	assetLayoutToModel(out, &plan)
+	assetLayoutScalarsToModel(out, &plan)
+	plan.Fields = reconcileLayoutFields(plan.Fields, out.Fields)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -273,7 +311,11 @@ func assetLayoutFromModel(m *assetLayoutModel) *client.AssetLayout {
 	return out
 }
 
-func assetLayoutToModel(a *client.AssetLayout, m *assetLayoutModel) {
+// assetLayoutScalarsToModel copies the layout's scalar attributes from an API
+// response. It deliberately leaves m.Fields alone — field reconciliation is
+// handled by reconcileLayoutFields so the configured order/positions stay
+// authoritative and cosmetic API reordering/renumbering does not churn.
+func assetLayoutScalarsToModel(a *client.AssetLayout, m *assetLayoutModel) {
 	m.ID = types.StringValue(fmt.Sprintf("%d", a.ID))
 	m.Name = types.StringValue(a.Name)
 	m.Icon = types.StringValue(a.Icon)
@@ -289,26 +331,53 @@ func assetLayoutToModel(a *client.AssetLayout, m *assetLayoutModel) {
 	m.Slug = types.StringValue(a.Slug)
 	m.CreatedAt = types.StringValue(a.CreatedAt)
 	m.UpdatedAt = types.StringValue(a.UpdatedAt)
+}
 
-	m.Fields = make([]assetLayoutFieldModel, len(a.Fields))
-	for i, f := range a.Fields {
-		m.Fields[i] = assetLayoutFieldModel{
-			ID:              types.Int64Value(f.ID),
-			Label:           types.StringValue(f.Label),
-			FieldType:       types.StringValue(f.FieldType),
-			Position:        types.Int64Value(f.Position),
-			Required:        boolFromPtrDefault(f.Required, false),
-			ShowInList:      boolFromPtrDefault(f.ShowInList, false),
-			Hint:            stringOrNull(f.Hint),
-			Min:             int64FromPtr(f.Min),
-			Max:             int64FromPtr(f.Max),
-			Options:         stringOrNull(f.Options),
-			Expiration:      boolFromPtrDefault(f.Expiration, false),
-			LinkableID:      int64FromPtr(f.LinkableID),
-			ListID:          int64FromPtr(f.ListID),
-			MultipleOptions: boolFromPtrDefault(f.MultipleOptions, false),
-		}
+// reconcileLayoutFields keeps the model's field order and configured values,
+// matching each field to its API counterpart by label to stamp the server id
+// and fill in computed booleans the configuration left unset. API-only fields
+// are ignored (the configuration owns the field set).
+func reconcileLayoutFields(model []assetLayoutFieldModel, api []client.AssetLayoutField) []assetLayoutFieldModel {
+	byLabel := make(map[string]client.AssetLayoutField, len(api))
+	for _, f := range api {
+		byLabel[f.Label] = f
 	}
+	out := make([]assetLayoutFieldModel, len(model))
+	for i, mf := range model {
+		rf := mf
+		if af, ok := byLabel[mf.Label.ValueString()]; ok {
+			rf.ID = types.Int64Value(af.ID)
+			rf.Required = boolFillUnknown(mf.Required, af.Required, false)
+			rf.ShowInList = boolFillUnknown(mf.ShowInList, af.ShowInList, false)
+			rf.Expiration = boolFillUnknown(mf.Expiration, af.Expiration, false)
+			rf.MultipleOptions = boolFillUnknown(mf.MultipleOptions, af.MultipleOptions, false)
+		} else {
+			rf.ID = int64FillUnknown(mf.ID, 0)
+			rf.Required = boolFillUnknown(mf.Required, nil, false)
+			rf.ShowInList = boolFillUnknown(mf.ShowInList, nil, false)
+			rf.Expiration = boolFillUnknown(mf.Expiration, nil, false)
+			rf.MultipleOptions = boolFillUnknown(mf.MultipleOptions, nil, false)
+		}
+		out[i] = rf
+	}
+	return out
+}
+
+func boolFillUnknown(v types.Bool, apiPtr *bool, def bool) types.Bool {
+	if !v.IsUnknown() && !v.IsNull() {
+		return v
+	}
+	if apiPtr != nil {
+		return types.BoolValue(*apiPtr)
+	}
+	return types.BoolValue(def)
+}
+
+func int64FillUnknown(v types.Int64, api int64) types.Int64 {
+	if !v.IsUnknown() && !v.IsNull() {
+		return v
+	}
+	return types.Int64Value(api)
 }
 
 func boolFromPtrDefault(p *bool, def bool) types.Bool {

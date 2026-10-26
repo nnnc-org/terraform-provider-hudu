@@ -146,7 +146,13 @@ func (r *assetResource) Create(ctx context.Context, req resource.CreateRequest, 
 		resp.Diagnostics.AddError("Create asset failed", err.Error())
 		return
 	}
-	assetToModel(out, &plan)
+	// Keep the configured values authoritative; only adopt server-owned
+	// computed attributes. This avoids "inconsistent result after apply" when
+	// Hudu normalizes values (dates, asset links, empty strings) on write.
+	assetComputedToModel(out, &plan)
+	if plan.CustomFields.IsUnknown() {
+		plan.CustomFields = customFieldsObject(out)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -170,7 +176,7 @@ func (r *assetResource) Read(ctx context.Context, req resource.ReadRequest, resp
 		resp.Diagnostics.AddError("Read asset failed", err.Error())
 		return
 	}
-	assetToModel(out, &state)
+	assetReadToModel(ctx, out, &state)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &state)...)
 }
 
@@ -213,7 +219,10 @@ func (r *assetResource) Update(ctx context.Context, req resource.UpdateRequest, 
 		resp.Diagnostics.AddError("Update asset failed", err.Error())
 		return
 	}
-	assetToModel(out, &plan)
+	assetComputedToModel(out, &plan)
+	if plan.CustomFields.IsUnknown() {
+		plan.CustomFields = customFieldsObject(out)
+	}
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -293,28 +302,24 @@ func customFieldsToWire(ctx context.Context, d types.Dynamic) ([]map[string]any,
 	return pairs, diags
 }
 
-// assetToModel maps an API Asset response onto the Terraform model, including
-// rebuilding the custom_fields dynamic value from the response `fields` array.
-func assetToModel(a *client.Asset, m *assetModel) {
+// assetComputedToModel copies only the server-owned, computed attributes from
+// an API response onto the model, leaving configuration-controlled attributes
+// (name, primary_*, custom_fields) untouched so they stay authoritative.
+func assetComputedToModel(a *client.Asset, m *assetModel) {
 	m.ID = types.StringValue(fmt.Sprintf("%d", a.ID))
-	m.CompanyID = types.Int64Value(a.CompanyID)
-	m.AssetLayoutID = types.Int64Value(a.AssetLayoutID)
-	m.Name = types.StringValue(a.Name)
-	m.PrimarySerial = stringOrNull(a.PrimarySerial)
-	m.PrimaryMail = stringOrNull(a.PrimaryMail)
-	m.PrimaryModel = stringOrNull(a.PrimaryModel)
-	m.PrimaryManufacturer = stringOrNull(a.PrimaryManufacturer)
 	m.Slug = types.StringValue(a.Slug)
 	m.URL = types.StringValue(a.URL)
 	m.CreatedAt = types.StringValue(a.CreatedAt)
 	m.UpdatedAt = types.StringValue(a.UpdatedAt)
 	m.AssetType = types.StringValue(a.AssetType)
+}
 
+// customFieldsObject builds a dynamic object value from the API response's
+// `fields` array (keys are the snake_case label).
+func customFieldsObject(a *client.Asset) types.Dynamic {
 	if len(a.Fields) == 0 {
-		m.CustomFields = types.DynamicNull()
-		return
+		return types.DynamicNull()
 	}
-
 	attrs := make(map[string]attr.Value, len(a.Fields))
 	atypes := make(map[string]attr.Type, len(a.Fields))
 	for _, f := range a.Fields {
@@ -325,7 +330,6 @@ func assetToModel(a *client.Asset, m *assetModel) {
 		dec := json.NewDecoder(bytes.NewReader(f.Value))
 		dec.UseNumber()
 		if err := dec.Decode(&raw); err != nil {
-			// Treat undecodable values as strings.
 			raw = string(f.Value)
 		}
 		val, typ := toAttrValue(raw)
@@ -334,11 +338,93 @@ func assetToModel(a *client.Asset, m *assetModel) {
 		atypes[k] = typ
 	}
 	if len(attrs) == 0 {
-		m.CustomFields = types.DynamicNull()
-		return
+		return types.DynamicNull()
 	}
 	obj, _ := types.ObjectValue(atypes, attrs)
-	m.CustomFields = types.DynamicValue(obj)
+	return types.DynamicValue(obj)
+}
+
+// reconcileCustomFields merges the API's custom fields onto the prior value,
+// keeping the prior value for any key that differs only by Hudu's write-side
+// normalization (dates, asset links, empty-vs-null) so plans stay stable.
+func reconcileCustomFields(ctx context.Context, prior types.Dynamic, a *client.Asset) types.Dynamic {
+	api := customFieldsObject(a)
+	if prior.IsNull() || prior.IsUnknown() {
+		return api
+	}
+	priorObj, ok := prior.UnderlyingValue().(types.Object)
+	if !ok {
+		return api
+	}
+	priorAttrs := priorObj.Attributes()
+	priorTypes := priorObj.AttributeTypes(ctx)
+
+	apiAttrs := map[string]attr.Value{}
+	apiTypes := map[string]attr.Type{}
+	if !api.IsNull() {
+		if apiObj, ok := api.UnderlyingValue().(types.Object); ok {
+			apiAttrs = apiObj.Attributes()
+			apiTypes = apiObj.AttributeTypes(ctx)
+		}
+	}
+
+	attrs := map[string]attr.Value{}
+	atypes := map[string]attr.Type{}
+	for k, pv := range priorAttrs {
+		av, present := apiAttrs[k]
+		if !present {
+			// Hudu dropped the key (e.g. an empty value) — keep the prior entry
+			// so the object shape stays stable across refreshes.
+			attrs[k] = pv
+			atypes[k] = priorTypes[k]
+			continue
+		}
+		if semanticEqualAttr(pv, av) {
+			attrs[k] = pv
+			atypes[k] = priorTypes[k]
+		} else {
+			attrs[k] = av
+			atypes[k] = apiTypes[k]
+		}
+	}
+	for k, av := range apiAttrs {
+		if _, seen := attrs[k]; !seen {
+			attrs[k] = av
+			atypes[k] = apiTypes[k]
+		}
+	}
+	if len(attrs) == 0 {
+		return types.DynamicNull()
+	}
+	obj, _ := types.ObjectValue(atypes, attrs)
+	return types.DynamicValue(obj)
+}
+
+// assetReadToModel refreshes state from a GET, preserving config-shaped values
+// that are only cosmetically different from what Hudu returns.
+func assetReadToModel(ctx context.Context, a *client.Asset, m *assetModel) {
+	assetComputedToModel(a, m)
+	m.CompanyID = types.Int64Value(a.CompanyID)
+	m.AssetLayoutID = types.Int64Value(a.AssetLayoutID)
+	m.Name = types.StringValue(a.Name)
+	m.PrimarySerial = preserveString(m.PrimarySerial, a.PrimarySerial)
+	m.PrimaryMail = preserveString(m.PrimaryMail, a.PrimaryMail)
+	m.PrimaryModel = preserveString(m.PrimaryModel, a.PrimaryModel)
+	m.PrimaryManufacturer = preserveString(m.PrimaryManufacturer, a.PrimaryManufacturer)
+	m.CustomFields = reconcileCustomFields(ctx, m.CustomFields, a)
+}
+
+// preserveString keeps the prior value when it is empty-equivalent to the API
+// value (Hudu stores unset top-level strings as null), else adopts the API value.
+func preserveString(prior types.String, api string) types.String {
+	priorS := ""
+	if !prior.IsNull() && !prior.IsUnknown() {
+		priorS = prior.ValueString()
+	}
+	if emptyEqual(priorS, api) {
+		return prior
+	}
+	return stringOrNull(api)
 }
 
 func stringOrNull(s string) types.String {
