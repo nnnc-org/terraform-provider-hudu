@@ -35,9 +35,33 @@ func normDate(s string) (string, bool) {
 	return "", false
 }
 
+// linkID reports whether m is a single asset-link object ({"id":..,"url":..,
+// "name":..}) and returns its id. Address and other object-valued fields have
+// no "id"/"url", so they are not mistaken for links.
+func linkID(m map[string]any) (int64, bool) {
+	idv, ok := m["id"]
+	if !ok {
+		return 0, false
+	}
+	if _, hasURL := m["url"]; !hasURL {
+		if _, hasName := m["name"]; !hasName {
+			return 0, false
+		}
+	}
+	switch n := idv.(type) {
+	case int64:
+		return n, true
+	case float64:
+		return int64(n), true
+	default:
+		return 0, false
+	}
+}
+
 // extractIDs reports whether every element of xs is an object carrying an "id"
-// and, if so, returns those ids sorted. This is the shape Hudu returns for an
-// asset-link (AssetTag) field: [{"id":6,"url":...,"name":...}].
+// and, if so, returns those ids sorted. Hudu returns an asset-link (AssetTag)
+// field as an array of such objects when more than one asset is linked:
+// [{"id":6,"url":...,"name":...}].
 func extractIDs(xs []any) ([]int64, bool) {
 	if len(xs) == 0 {
 		return nil, false
@@ -110,6 +134,12 @@ func canonGo(g any) any {
 		}
 		return out
 	case map[string]any:
+		// A single asset link is returned as a bare {id,url,name} object; reduce
+		// it to the same [id] shape as the multi-link array and the configured
+		// list of ids so they compare equal.
+		if id, ok := linkID(x); ok {
+			return []any{id}
+		}
 		out := map[string]any{}
 		for k, e := range x {
 			if cv := canonGo(e); cv != nil {

@@ -49,8 +49,10 @@ func TestCanonGoEquivalences(t *testing.T) {
 	}
 	// dates: config "YYYY/MM/DD" vs Hudu's ISO echo
 	eq("date", "2028/01/09", "2028-01-09T00:00:00.000Z")
-	// asset link: config [6] vs Hudu's [{id,url,name}] echo
-	eq("assetlink", []any{int64(6)}, []any{map[string]any{"id": int64(6), "url": "/a/x", "name": "FW"}})
+	// asset link: config [6] vs Hudu's [{id,url,name}] array echo
+	eq("assetlink-array", []any{int64(6)}, []any{map[string]any{"id": int64(6), "url": "/a/x", "name": "FW"}})
+	// asset link: config [6] vs Hudu's bare {id,url,name} object echo (single link)
+	eq("assetlink-single", []any{int64(6)}, map[string]any{"id": int64(6), "url": "/a/x", "name": "FW"})
 	// empty string vs null
 	eq("empty-null", "", nil)
 	// empty list vs null (unset asset link)
