@@ -2,9 +2,11 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"math"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -58,6 +60,28 @@ func linkID(m map[string]any) (int64, bool) {
 	}
 }
 
+// parseLinkJSON reports whether s is a JSON string encoding one or more asset
+// links ([{"id":..}] or {"id":..}) and returns the ids sorted.
+func parseLinkJSON(s string) ([]int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || (s[0] != '[' && s[0] != '{') {
+		return nil, false
+	}
+	var v any
+	if json.Unmarshal([]byte(s), &v) != nil {
+		return nil, false
+	}
+	switch t := v.(type) {
+	case []any:
+		return extractIDs(t)
+	case map[string]any:
+		if id, ok := linkID(t); ok {
+			return []int64{id}, true
+		}
+	}
+	return nil, false
+}
+
 // extractIDs reports whether every element of xs is an object carrying an "id"
 // and, if so, returns those ids sorted. Hudu returns an asset-link (AssetTag)
 // field as an array of such objects when more than one asset is linked:
@@ -104,6 +128,16 @@ func canonGo(g any) any {
 		}
 		if d, ok := normDate(x); ok {
 			return d
+		}
+		// Hudu echoes asset-link (AssetTag) fields as a JSON *string*, e.g.
+		// `[{"id":6,"url":...,"name":...}]` or `{"id":6,...}`. Reduce such a
+		// string to the same id list the configured value canonicalizes to.
+		if ids, ok := parseLinkJSON(x); ok {
+			out := make([]any, len(ids))
+			for i, id := range ids {
+				out[i] = id
+			}
+			return out
 		}
 		return x
 	case bool:
