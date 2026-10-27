@@ -39,7 +39,9 @@ func TestCreateCompany_SendsAPIKeyAndDecodesResponse(t *testing.T) {
 		_ = json.NewDecoder(r.Body).Decode(&gotBody)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"id":42,"name":"Acme","slug":"acme"}`))
+		// The live API wraps the created company in a {"company": ...} envelope
+		// even though the OpenAPI spec shows a bare object.
+		_, _ = w.Write([]byte(`{"company":{"id":42,"name":"Acme","slug":"acme"}}`))
 	}))
 
 	out, err := c.CreateCompany(context.Background(), &Company{Name: "Acme"})
@@ -112,20 +114,35 @@ func TestAssetLayoutCreate_WrapsEnvelope(t *testing.T) {
 
 func TestDeactivateAssetLayout_SendsActiveFalse(t *testing.T) {
 	var got map[string]any
+	var methods []string
+
+	// DeactivateAssetLayout reads the layout first, then echoes it back with
+	// active=false, so the handler has to serve a GET before the PUT.
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != "PUT" {
-			t.Errorf("method = %s", r.Method)
+		methods = append(methods, r.Method)
+		switch r.Method {
+		case http.MethodGet:
+			_, _ = w.Write([]byte(`{"asset_layout":{"id":7,"name":"X","active":true,"fields":[{"id":1,"label":"Serial","field_type":"Text","position":1}]}}`))
+		case http.MethodPut:
+			_ = json.NewDecoder(r.Body).Decode(&got)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{}`))
+		default:
+			t.Errorf("unexpected method %s", r.Method)
 		}
-		_ = json.NewDecoder(r.Body).Decode(&got)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{}`))
 	}))
 	if err := c.DeactivateAssetLayout(context.Background(), 7); err != nil {
 		t.Fatalf("DeactivateAssetLayout: %v", err)
 	}
+	if len(methods) != 2 || methods[0] != http.MethodGet || methods[1] != http.MethodPut {
+		t.Errorf("request methods = %v, want [GET PUT]", methods)
+	}
 	env, _ := got["asset_layout"].(map[string]any)
 	if env == nil || env["active"] != false {
 		t.Errorf("body = %v, want active=false under asset_layout", got)
+	}
+	if _, ok := env["fields"]; ok {
+		t.Errorf("body = %v, want fields stripped from the echo", got)
 	}
 }
 
